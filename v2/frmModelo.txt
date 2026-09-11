@@ -1,0 +1,567 @@
+'==============================================================
+' frmModelo - janela de definicao do modelo
+'
+' COMO INSTALAR: no editor de VBA, Inserir > UserForm. No painel
+' Propriedades mude (Name) para frmModelo. Abra o codigo do
+' formulario (F7) e cole este arquivo inteiro por cima.
+'
+' Nao usa RefEdit nem nenhum controle ActiveX externo: o seletor
+' de faixa e o Application.InputBox nativo do Excel, que funciona
+' em qualquer versao. Por isso a janela e modeless.
+'
+' O que voce define aqui vai para os nomes solver_* da aba, o mesmo
+' lugar onde o Solver do Excel guarda o modelo dele.
+'==============================================================
+Option Explicit
+
+Private WithEvents mBtnObj As MSForms.CommandButton
+Private WithEvents mBtnVars As MSForms.CommandButton
+Private WithEvents mBtnSugerir As MSForms.CommandButton
+Private WithEvents mBtnAtualizar As MSForms.CommandButton
+Private WithEvents mBtnAdd As MSForms.CommandButton
+Private WithEvents mBtnEdit As MSForms.CommandButton
+Private WithEvents mBtnDel As MSForms.CommandButton
+Private WithEvents mBtnDelAll As MSForms.CommandButton
+Private WithEvents mBtnLhs As MSForms.CommandButton
+Private WithEvents mBtnRhs As MSForms.CommandButton
+Private WithEvents mBtnAplicar As MSForms.CommandButton
+Private WithEvents mBtnCancRestr As MSForms.CommandButton
+Private WithEvents mBtnResolver As MSForms.CommandButton
+Private WithEvents mBtnSalvar As MSForms.CommandButton
+Private WithEvents mBtnFechar As MSForms.CommandButton
+Private WithEvents mLst As MSForms.ListBox
+Private WithEvents mCboRel As MSForms.ComboBox
+
+Private mWs As Worksheet
+Private mMontado As Boolean
+' Verdadeiro enquanto Montar roda. Definir .ListIndex de um combo dispara
+' o evento Change na hora, e nesse momento os controles criados depois
+' dele ainda nao existem - o handler tem de sair sem tocar em nada.
+Private mMontando As Boolean
+
+' restricoes em edicao (texto, como o usuario ve)
+Private mLhs() As String
+Private mRel() As Long
+Private mRhs() As String
+Private mN As Long
+Private mEditando As Long          ' 0 = nova; >0 = alterando essa
+
+Private mSolverNomes() As String
+Private mNSolvers As Long
+
+Private Const LARG As Single = 560
+
+'--------------------------------------------------------------
+' interface
+'--------------------------------------------------------------
+Public Sub Abrir(ws As Worksheet)
+    Montar
+    Set mWs = ws
+    Me.Caption = IMT_NOME & " - modelo da aba '" & ws.Name & "'"
+    Me.Controls("lblAba").Caption = "Este modelo fica salvo na aba '" & ws.Name & _
+                                    "'. Cada aba da pasta guarda o seu."
+    Carregar
+    PainelRestricao False
+    Me.Show vbModeless
+End Sub
+
+'--------------------------------------------------------------
+' montagem
+'--------------------------------------------------------------
+Private Sub Montar()
+    If mMontado Then Exit Sub
+    mMontado = True
+    mMontando = True
+    Me.Width = LARG + 16
+    Me.Height = 486
+    Me.StartUpPosition = 1
+
+    ' objetivo
+    Rotulo "lblObj", 12, 8, 200, 12, "Celula do objetivo (com formula):"
+    Caixa "txtObj", 12, 22, 250, 20
+    Set mBtnObj = Botao("btnObj", 266, 22, 26, 20, "...")
+    Opcao_ "optMax", 310, 24, 55, "Max"
+    Opcao_ "optMin", 365, 24, 55, "Min"
+    Opcao_ "optValor", 420, 24, 65, "Valor de:"
+    Caixa "txtValor", 488, 22, 60, 20
+    Me.Controls("optMin").Value = True
+
+    ' variaveis
+    Rotulo "lblVars", 12, 48, 300, 12, "Celulas variaveis (pode ter varias faixas, separadas por virgula):"
+    Caixa "txtVars", 12, 62, 250, 20
+    Set mBtnVars = Botao("btnVars", 266, 62, 26, 20, "...")
+    Set mBtnSugerir = Botao("btnSugerir", 310, 62, 130, 20, "Sugerir pelo objetivo")
+    Rotulo "lblDica", 12, 84, LARG - 24, 12, "Dica: celulas de valor (sem formula) das quais o objetivo depende."
+    Me.Controls("lblDica").ForeColor = RGB(110, 110, 110)
+
+    ' restricoes
+    Rotulo "lblRestr", 12, 102, 200, 12, "Restricoes:"
+    Set mLst = Me.Controls.Add("Forms.ListBox.1", "lstRestr", True)
+    With mLst
+        .Left = 12: .Top = 116: .Width = 380: .Height = 140
+        .Font.Name = "Consolas": .Font.Size = 9
+    End With
+    Set mBtnAdd = Botao("btnAdd", 402, 116, 146, 22, "Adicionar")
+    Set mBtnEdit = Botao("btnEdit", 402, 144, 146, 22, "Alterar")
+    Set mBtnDel = Botao("btnDel", 402, 172, 146, 22, "Excluir")
+    Set mBtnDelAll = Botao("btnDelAll", 402, 200, 146, 22, "Excluir todas")
+
+    ' painel de edicao de uma restricao
+    Rotulo "lblEd", 12, 262, 400, 12, "Restricao:  lado esquerdo     sinal     lado direito (faixa ou numero)"
+    Caixa "txtLhs", 12, 276, 150, 20
+    Set mBtnLhs = Botao("btnLhs", 166, 276, 26, 20, "...")
+    Set mCboRel = Me.Controls.Add("Forms.ComboBox.1", "cboRel", True)
+    With mCboRel
+        .Left = 200: .Top = 276: .Width = 52: .Height = 20
+        .Style = fmStyleDropDownList
+        .AddItem "<=": .AddItem "=": .AddItem ">=": .AddItem "int": .AddItem "bin"
+        .ListIndex = 0
+    End With
+    Caixa "txtRhs", 260, 276, 150, 20
+    Set mBtnRhs = Botao("btnRhs", 414, 276, 26, 20, "...")
+    Set mBtnAplicar = Botao("btnAplicar", 448, 276, 50, 20, "OK")
+    Set mBtnCancRestr = Botao("btnCancRestr", 502, 276, 46, 20, "Cancelar")
+
+    ' opcoes
+    With Me.Controls.Add("Forms.CheckBox.1", "chkNaoNeg", True)
+        .Left = 12: .Top = 304: .Width = 268: .Height = 16
+        .Caption = "Tornar variaveis sem restricao nao-negativas": .Value = True
+    End With
+    With Me.Controls.Add("Forms.CheckBox.1", "chkSens", True)
+        .Left = 292: .Top = 304: .Width = 200: .Height = 16
+        .Caption = "Analise de sensibilidade": .Value = True
+    End With
+
+    Rotulo "lblSolver", 12, 330, 200, 12, "Solver:"
+    With Me.Controls.Add("Forms.ComboBox.1", "cboSolver", True)
+        .Left = 12: .Top = 344: .Width = 380: .Height = 20
+        .Style = fmStyleDropDownList
+    End With
+    Rotulo "lblTempo", 402, 330, 80, 12, "Tempo max. (s):"
+    Caixa "txtTempo", 402, 344, 60, 20
+    Rotulo "lblGap", 470, 330, 80, 12, "Gap (0 = otimo):"
+    Caixa "txtGap", 470, 344, 60, 20
+
+    Rotulo "lblEmail", 12, 372, 300, 12, "Seu e-mail (o NEOS exige; os solvers locais ignoram):"
+    Caixa "txtEmail", 12, 386, 250, 20
+    Set mBtnAtualizar = Botao("btnAtualizar", 272, 386, 150, 20, "Atualizar lista de solvers")
+
+    Set mBtnResolver = Botao("btnResolver", LARG - 292, 420, 100, 26, "Resolver")
+    Set mBtnSalvar = Botao("btnSalvar", LARG - 186, 420, 86, 26, "Salvar")
+    Set mBtnFechar = Botao("btnFechar", LARG - 94, 420, 82, 26, "Fechar")
+    mBtnResolver.Default = True
+
+    ' onde o modelo mora: a duvida mais comum de quem comeca. Fica ao lado
+    ' do Salvar, que e a hora em que a pessoa precisa saber disso.
+    Rotulo "lblAba", 12, 422, LARG - 310, 24, ""
+    With Me.Controls("lblAba")
+        .ForeColor = RGB(31, 56, 100): .Font.Bold = True
+    End With
+
+    mMontando = False
+    mCboRel_Change              ' agora sim, com tudo no lugar
+End Sub
+
+Private Sub Rotulo(ByVal nome As String, ByVal x As Single, ByVal y As Single, ByVal w As Single, ByVal h As Single, ByVal texto As String)
+    With Me.Controls.Add("Forms.Label.1", nome, True)
+        .Left = x: .Top = y: .Width = w: .Height = h: .Caption = texto: .Font.Size = 8
+    End With
+End Sub
+
+Private Sub Caixa(ByVal nome As String, ByVal x As Single, ByVal y As Single, ByVal w As Single, ByVal h As Single)
+    With Me.Controls.Add("Forms.TextBox.1", nome, True)
+        .Left = x: .Top = y: .Width = w: .Height = h: .Font.Size = 9
+    End With
+End Sub
+
+Private Function Botao(ByVal nome As String, ByVal x As Single, ByVal y As Single, ByVal w As Single, ByVal h As Single, ByVal texto As String) As MSForms.CommandButton
+    Set Botao = Me.Controls.Add("Forms.CommandButton.1", nome, True)
+    With Botao
+        .Left = x: .Top = y: .Width = w: .Height = h: .Caption = texto: .Font.Size = 8
+    End With
+End Function
+
+Private Sub Opcao_(ByVal nome As String, ByVal x As Single, ByVal y As Single, ByVal w As Single, ByVal texto As String)
+    With Me.Controls.Add("Forms.OptionButton.1", nome, True)
+        .Left = x: .Top = y: .Width = w: .Height = 16: .Caption = texto: .Font.Size = 8
+    End With
+End Sub
+
+'--------------------------------------------------------------
+' carregar e salvar
+'--------------------------------------------------------------
+Private Sub Carregar()
+    Dim m As Modelo, i As Long, ladoDir As String
+    mN = 0: ReDim mLhs(1 To 1): ReDim mRel(1 To 1): ReDim mRhs(1 To 1)
+    Me.Controls("txtObj").Text = ""
+    Me.Controls("txtVars").Text = ""
+    Me.Controls("txtValor").Text = "0"
+    Me.Controls("optMin").Value = True
+    Me.Controls("chkNaoNeg").Value = True
+
+    If LerModelo(mWs, m) Then
+        If Not m.obj Is Nothing Then Me.Controls("txtObj").Text = Endereco(m.obj)
+        Select Case m.tipo
+            Case TIPO_MAX: Me.Controls("optMax").Value = True
+            Case TIPO_VALOR: Me.Controls("optValor").Value = True
+            Case Else: Me.Controls("optMin").Value = True
+        End Select
+        Me.Controls("txtValor").Text = Trim$(Str$(m.valorAlvo))
+        Me.Controls("txtVars").Text = Endereco(m.vars)
+        Me.Controls("chkNaoNeg").Value = m.naoNeg
+        For i = 1 To m.n
+            ' Com IIf isto quebrava com erro 91: o VBA avalia TODOS os
+            ' ramos, e numa restricao int/bin o objeto rhs vale Nothing.
+            If m.r(i).rel >= REL_INT Then
+                ladoDir = ""
+            ElseIf m.r(i).rhsEhConst Then
+                ladoDir = Trim$(Str$(m.r(i).rhsConst))
+            Else
+                ladoDir = Endereco(m.r(i).rhs)
+            End If
+            AnotaRestricao Endereco(m.r(i).lhs), m.r(i).rel, ladoDir
+        Next i
+    End If
+    MostrarLista
+
+    CarregarSolvers False, Opcao("solver", "HiGHS")
+    Me.Controls("txtTempo").Text = Opcao("tempo", "300")
+    Me.Controls("txtGap").Text = Opcao("gap", "0")
+    Me.Controls("chkSens").Value = (Opcao("sens", "1") = "1")
+    Me.Controls("txtEmail").Text = Opcao("email", "")
+End Sub
+
+Private Sub CarregarSolvers(ByVal forcar As Boolean, ByVal escolhido As String)
+    Dim item As String
+    Dim lista As Collection, p As Variant, i As Long
+    With Me.Controls("cboSolver")
+        .Clear
+        mNSolvers = 0: ReDim mSolverNomes(1 To 1)
+        Set lista = ListarSolvers(forcar)
+        If lista.Count = 0 Then
+            For Each p In Array("CBC", "HiGHS", "SCIP")
+                mNSolvers = mNSolvers + 1: ReDim Preserve mSolverNomes(1 To mNSolvers)
+                mSolverNomes(mNSolvers) = p: .AddItem p & "   (motor nao encontrado)"
+            Next p
+        Else
+            For Each p In lista
+                mNSolvers = mNSolvers + 1: ReDim Preserve mSolverNomes(1 To mNSolvers)
+                mSolverNomes(mNSolvers) = p(0)
+                ' com IIf isto dava erro 9: o VBA avalia os dois ramos, e
+                ' p(4) nao existe numa lista guardada por uma versao antiga
+                ' o tipo vem logo depois do nome: e o que decide a escolha.
+                ' Antes ficava no fim e era o primeiro a ser cortado.
+                item = p(1)
+                If UBound(p) >= 4 Then item = item & "  -  " & p(4)
+                item = item & "  -  " & p(2)
+                .AddItem item
+            Next p
+        End If
+        .ListIndex = 0
+        For i = 1 To mNSolvers
+            If UCase$(mSolverNomes(i)) = UCase$(escolhido) Then .ListIndex = i - 1
+        Next i
+    End With
+End Sub
+
+Private Function Salvar() As Boolean
+    Dim m As Modelo, i As Long, r As Range, txt As String
+    Set m.ws = mWs
+
+    ' objetivo
+    txt = Trim$(Me.Controls("txtObj").Text)
+    If txt <> "" Then
+        Set r = Faixa(txt)
+        If r Is Nothing Then Avisa "Nao entendi a celula do objetivo: " & txt: Exit Function
+        If r.Cells.Count <> 1 Then Avisa "O objetivo precisa ser uma celula so.": Exit Function
+        If Not r.HasFormula Then Avisa "A celula do objetivo (" & txt & ") nao tem formula. Ela deveria calcular o total a otimizar.": Exit Function
+        Set m.obj = r
+    End If
+    If Me.Controls("optMax").Value Then
+        m.tipo = TIPO_MAX
+    ElseIf Me.Controls("optValor").Value Then
+        m.tipo = TIPO_VALOR
+        m.valorAlvo = Val(Replace(Me.Controls("txtValor").Text, ",", "."))
+    Else
+        m.tipo = TIPO_MIN
+    End If
+
+    ' variaveis
+    txt = Trim$(Me.Controls("txtVars").Text)
+    If txt = "" Then Avisa "Faltam as celulas variaveis.": Exit Function
+    Set r = Faixa(txt)
+    If r Is Nothing Then Avisa "Nao entendi as celulas variaveis: " & txt: Exit Function
+    Set m.vars = r
+    m.naoNeg = Me.Controls("chkNaoNeg").Value
+
+    ' restricoes
+    m.n = mN
+    If mN > 0 Then
+        ReDim m.r(1 To mN)
+        For i = 1 To mN
+            Set r = Faixa(mLhs(i))
+            If r Is Nothing Then Avisa "Restricao " & i & ": lado esquerdo invalido (" & mLhs(i) & ")": Exit Function
+            Set m.r(i).lhs = r
+            m.r(i).rel = mRel(i)
+            If mRel(i) <= REL_GE Then
+                If EhNumero(mRhs(i)) Then
+                    m.r(i).rhsEhConst = True
+                    m.r(i).rhsConst = Val(Replace(mRhs(i), ",", "."))
+                Else
+                    Set r = Faixa(mRhs(i))
+                    If r Is Nothing Then Avisa "Restricao " & i & ": lado direito invalido (" & mRhs(i) & ")": Exit Function
+                    Set m.r(i).rhs = r
+                End If
+            Else
+                m.r(i).rhsEhConst = True
+            End If
+        Next i
+    End If
+    If m.obj Is Nothing And mN = 0 Then Avisa "Defina pelo menos um objetivo ou uma restricao.": Exit Function
+
+    GravarModelo m
+
+    ' opcoes do usuario
+    If Me.Controls("cboSolver").ListIndex >= 0 Then GravarOpcao "solver", mSolverNomes(Me.Controls("cboSolver").ListIndex + 1)
+    GravarOpcao "tempo", Trim$(Str$(Val(Me.Controls("txtTempo").Text)))
+    GravarOpcao "gap", Trim$(Str$(Val(Replace(Me.Controls("txtGap").Text, ",", "."))))
+    GravarOpcao "sens", IIf(Me.Controls("chkSens").Value, "1", "0")
+    GravarOpcao "email", Trim$(Me.Controls("txtEmail").Text)
+    Salvar = True
+End Function
+
+'--------------------------------------------------------------
+' restricoes
+'--------------------------------------------------------------
+Private Sub AnotaRestricao(ByVal lhs As String, ByVal rel As Long, ByVal rhs As String)
+    mN = mN + 1
+    ReDim Preserve mLhs(1 To mN): ReDim Preserve mRel(1 To mN): ReDim Preserve mRhs(1 To mN)
+    mLhs(mN) = lhs: mRel(mN) = rel: mRhs(mN) = rhs
+End Sub
+
+Private Sub MostrarLista()
+    Dim i As Long, sel As Long
+    sel = mLst.ListIndex
+    mLst.Clear
+    For i = 1 To mN
+        mLst.AddItem Left$(mLhs(i) & Space$(18), 18) & "  " & Left$(SinalTexto(mRel(i)) & "   ", 4) & "  " & mRhs(i)
+    Next i
+    If sel >= 0 And sel < mN Then mLst.ListIndex = sel
+End Sub
+
+Private Function SinalTexto(ByVal rel As Long) As String
+    Select Case rel
+        Case REL_LE: SinalTexto = "<="
+        Case REL_EQ: SinalTexto = "="
+        Case REL_GE: SinalTexto = ">="
+        Case REL_INT: SinalTexto = "int"
+        Case REL_BIN: SinalTexto = "bin"
+    End Select
+End Function
+
+Private Sub PainelRestricao(ByVal visivel As Boolean)
+    Dim n As Variant
+    For Each n In Array("lblEd", "txtLhs", "btnLhs", "cboRel", "txtRhs", "btnRhs", "btnAplicar", "btnCancRestr")
+        Me.Controls(n).Visible = visivel
+    Next n
+    mBtnAdd.Enabled = Not visivel: mBtnEdit.Enabled = Not visivel
+    mBtnDel.Enabled = Not visivel: mBtnDelAll.Enabled = Not visivel
+    mBtnResolver.Enabled = Not visivel: mBtnSalvar.Enabled = Not visivel
+End Sub
+
+Private Sub mBtnAdd_Click()
+    mEditando = 0
+    Me.Controls("txtLhs").Text = "": Me.Controls("txtRhs").Text = ""
+    mCboRel.ListIndex = 0
+    PainelRestricao True
+    Me.Controls("txtLhs").SetFocus
+End Sub
+
+Private Sub mBtnEdit_Click()
+    If mLst.ListIndex < 0 Then Exit Sub
+    mEditando = mLst.ListIndex + 1
+    Me.Controls("txtLhs").Text = mLhs(mEditando)
+    Me.Controls("txtRhs").Text = mRhs(mEditando)
+    mCboRel.ListIndex = mRel(mEditando) - 1
+    PainelRestricao True
+End Sub
+
+Private Sub mLst_DblClick(ByVal Cancel As MSForms.ReturnBoolean)
+    mBtnEdit_Click
+End Sub
+
+Private Sub mBtnDel_Click()
+    Dim i As Long, k As Long
+    If mLst.ListIndex < 0 Then Exit Sub
+    k = mLst.ListIndex + 1
+    For i = k To mN - 1
+        mLhs(i) = mLhs(i + 1): mRel(i) = mRel(i + 1): mRhs(i) = mRhs(i + 1)
+    Next i
+    mN = mN - 1
+    MostrarLista
+End Sub
+
+Private Sub mBtnDelAll_Click()
+    If mN = 0 Then Exit Sub
+    If MsgBox("Excluir todas as " & mN & " restricoes?", vbQuestion + vbYesNo, IMT_NOME) = vbYes Then
+        mN = 0: MostrarLista
+    End If
+End Sub
+
+Private Sub mCboRel_Change()
+    Dim ehTipo As Boolean
+    If mMontando Then Exit Sub
+    ehTipo = (mCboRel.ListIndex >= 3)
+    Me.Controls("txtRhs").Enabled = Not ehTipo
+    mBtnRhs.Enabled = Not ehTipo
+    If ehTipo Then Me.Controls("txtRhs").Text = ""
+End Sub
+
+Private Sub mBtnAplicar_Click()
+    Dim lhs As String, rhs As String, rel As Long, r As Range
+    lhs = Trim$(Me.Controls("txtLhs").Text)
+    rhs = Trim$(Me.Controls("txtRhs").Text)
+    rel = mCboRel.ListIndex + 1
+    Set r = Faixa(lhs)
+    If r Is Nothing Then Avisa "Lado esquerdo invalido: " & lhs: Exit Sub
+    lhs = Endereco(r)
+    If rel <= REL_GE Then
+        If rhs = "" Then Avisa "Falta o lado direito.": Exit Sub
+        If Not EhNumero(rhs) Then
+            Set r = Faixa(rhs)
+            If r Is Nothing Then Avisa "Lado direito invalido: " & rhs: Exit Sub
+            rhs = Endereco(r)
+        Else
+            rhs = Trim$(Str$(Val(Replace(rhs, ",", "."))))
+        End If
+    Else
+        rhs = ""
+    End If
+    If mEditando = 0 Then
+        AnotaRestricao lhs, rel, rhs
+    Else
+        mLhs(mEditando) = lhs: mRel(mEditando) = rel: mRhs(mEditando) = rhs
+    End If
+    MostrarLista
+    PainelRestricao False
+End Sub
+
+Private Sub mBtnCancRestr_Click()
+    PainelRestricao False
+End Sub
+
+'--------------------------------------------------------------
+' selecao de faixas
+'--------------------------------------------------------------
+Private Function EscolherFaixa(ByVal prompt As String, ByVal atual As String) As String
+    Dim r As Range
+    EscolherFaixa = atual
+    On Error Resume Next
+    Set r = Application.InputBox(prompt, IMT_NOME, atual, Type:=8)
+    On Error GoTo 0
+    If Not r Is Nothing Then EscolherFaixa = Endereco(r)
+End Function
+
+Private Function Endereco(r As Range) As String
+    ' A1:B3 quando e da aba do modelo; 'Outra'!A1 quando nao e
+    If r.Worksheet Is mWs Then
+        Endereco = r.Address(False, False)
+    Else
+        Endereco = "'" & r.Worksheet.Name & "'!" & r.Address(False, False)
+    End If
+End Function
+
+Private Function Faixa(ByVal txt As String) As Range
+    On Error Resume Next
+    If InStr(txt, "!") > 0 Then
+        Set Faixa = Application.Range(txt)
+    Else
+        Set Faixa = mWs.Range(txt)
+    End If
+End Function
+
+Private Function EhNumero(ByVal txt As String) As Boolean
+    EhNumero = IsNumeric(Replace(txt, ",", "."))
+End Function
+
+Private Sub Avisa(ByVal msg As String)
+    MsgBox msg, vbExclamation, IMT_NOME
+End Sub
+
+Private Sub mBtnObj_Click()
+    Me.Controls("txtObj").Text = EscolherFaixa("Selecione a celula do objetivo:", Me.Controls("txtObj").Text)
+End Sub
+
+Private Sub mBtnVars_Click()
+    Me.Controls("txtVars").Text = EscolherFaixa("Selecione as celulas variaveis (Ctrl para varias faixas):", Me.Controls("txtVars").Text)
+End Sub
+
+Private Sub mBtnLhs_Click()
+    Me.Controls("txtLhs").Text = EscolherFaixa("Lado esquerdo da restricao (as formulas):", Me.Controls("txtLhs").Text)
+End Sub
+
+Private Sub mBtnRhs_Click()
+    Me.Controls("txtRhs").Text = EscolherFaixa("Lado direito da restricao (faixa com os limites):", Me.Controls("txtRhs").Text)
+End Sub
+
+Private Sub mBtnAtualizar_Click()
+    ' A lista fica guardada para a janela abrir na hora. Este botao e
+    ' para quando alguem instala um solver novo na maquina.
+    Dim escolhido As String
+    If Me.Controls("cboSolver").ListIndex >= 0 Then
+        escolhido = mSolverNomes(Me.Controls("cboSolver").ListIndex + 1)
+    End If
+    Me.Controls("cboSolver").Clear
+    CarregarSolvers True, escolhido
+    MsgBox mNSolvers & " solver(es) encontrados.", vbInformation, IMT_NOME
+End Sub
+
+Private Sub mBtnSugerir_Click()
+    ' variaveis = celulas de valor numerico das quais o objetivo depende
+    Dim obj As Range, prec As Range, c As Range, achadas As Range
+    Set obj = Faixa(Trim$(Me.Controls("txtObj").Text))
+    If obj Is Nothing Then Avisa "Informe primeiro a celula do objetivo.": Exit Sub
+    On Error Resume Next
+    Set prec = obj.Precedents
+    On Error GoTo 0
+    If prec Is Nothing Then Avisa "O objetivo nao depende de nenhuma celula desta aba.": Exit Sub
+    For Each c In prec.Cells
+        If Not c.HasFormula Then
+            If IsNumeric(c.Value2) Or IsEmpty(c.Value2) Then
+                If achadas Is Nothing Then Set achadas = c Else Set achadas = Application.Union(achadas, c)
+            End If
+        End If
+    Next c
+    If achadas Is Nothing Then
+        Avisa "Nao achei celulas de valor entre as que o objetivo usa."
+    Else
+        Me.Controls("txtVars").Text = Endereco(achadas)
+        MsgBox "Sugestao: " & Endereco(achadas) & "  (" & achadas.Cells.Count & " celulas)" & vbLf & vbLf & _
+               "Confira: os coeficientes (custos, tempos) tambem sao celulas de valor e podem ter " & _
+               "entrado na lista. Tire o que nao for decisao.", vbInformation, IMT_NOME
+    End If
+End Sub
+
+'--------------------------------------------------------------
+' botoes principais
+'--------------------------------------------------------------
+Private Sub mBtnSalvar_Click()
+    If Salvar() Then MsgBox "Modelo salvo na aba '" & mWs.Name & "'.", vbInformation, IMT_NOME
+End Sub
+
+Private Sub mBtnResolver_Click()
+    If Not Salvar() Then Exit Sub
+    Me.Hide
+    IMTResolver mWs
+End Sub
+
+Private Sub mBtnFechar_Click()
+    Me.Hide
+End Sub
+
+Private Sub UserForm_QueryClose(Cancel As Integer, CloseMode As Integer)
+    If CloseMode = vbFormControlMenu Then
+        Cancel = True
+        Me.Hide
+    End If
+End Sub

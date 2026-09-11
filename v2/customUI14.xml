@@ -1,0 +1,91 @@
+<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<customUI xmlns="http://schemas.microsoft.com/office/2009/07/customui">
+  <ribbon>
+    <tabs>
+      <tab id="tabIMTSolver" label="IMTSolver" insertAfterMso="TabData">
+
+        <group id="grpModelo" label="Modelo">
+          <button id="btnModelo"
+                  label="Modelo"
+                  size="large"
+                  imageMso="TableDesign"
+                  onAction="RibbonModelo"
+                  screentip="Definir o modelo"
+                  supertip="Objetivo, variáveis de decisão e restrições desta aba. O modelo fica guardado na planilha, no mesmo formato do Solver do Excel."/>
+          <button id="btnVerificar"
+                  label="Verificar"
+                  size="large"
+                  imageMso="ErrorChecking"
+                  onAction="RibbonVerificar"
+                  screentip="Procura problemas no modelo desta aba"
+                  supertip="Aponta as células que parecem erradas e explica o porquê. É um parecer: não impede você de resolver."/>
+          <button id="btnMostrar"
+                  label="Mostrar"
+                  imageMso="ShapesInsertGallery"
+                  onAction="RibbonMostrar"
+                  screentip="Desenha molduras sobre o objetivo, as variáveis e as restrições"/>
+          <button id="btnEsconder"
+                  label="Esconder"
+                  imageMso="Clear"
+                  onAction="RibbonEsconder"
+                  screentip="Remove as molduras"/>
+          <button id="btnLimpar"
+                  label="Zerar variáveis"
+                  imageMso="Refresh"
+                  onAction="RibbonLimpar"
+                  screentip="Coloca zero em todas as células de variável"/>
+        </group>
+
+        <group id="grpResolver" label="Resolver">
+          <button id="btnResolver"
+                  label="Resolver"
+                  size="large"
+                  imageMso="AutoSum"
+                  onAction="RibbonResolver"
+                  screentip="Resolve o modelo desta aba"
+                  supertip="Lê o modelo, chama o solver escolhido e acompanha o andamento numa janela. O Excel continua livre enquanto roda."/>
+          <button id="btnCancelar"
+                  label="Cancelar"
+                  size="large"
+                  imageMso="CancelRequest"
+                  onAction="RibbonCancelar"
+                  screentip="Pede ao solver para parar e devolve a melhor solução que ele tiver"/>
+        </group>
+
+        <group id="grpResultados" label="Resultados">
+          <button id="btnResposta"
+                  label="Resposta"
+                  size="large"
+                  imageMso="TableInsert"
+                  onAction="RibbonResposta"
+                  screentip="Relatório de resposta da última execução"/>
+          <button id="btnSens"
+                  label="Sensibilidade"
+                  size="large"
+                  imageMso="ChartTrendline"
+                  onAction="RibbonSensibilidade"
+                  screentip="Relatório de sensibilidade da última execução"
+                  supertip="Preços-sombra, custos reduzidos e faixas permitidas, no mesmo formato do Solver do Excel."/>
+        </group>
+
+        <group id="grpAjuda" label="Ajuda">
+          <button id="btnSolvers"
+                  label="Solvers"
+                  imageMso="ServerProperties"
+                  onAction="RibbonSolvers"
+                  screentip="Lista os solvers disponíveis, locais e do NEOS"/>
+          <button id="btnExemplos"
+                  label="Exemplos"
+                  imageMso="FileNew"
+                  onAction="RibbonExemplos"
+                  screentip="Abre a planilha com modelos de exemplo prontos para resolver"/>
+          <button id="btnSobre"
+                  label="Sobre"
+                  imageMso="Info"
+                  onAction="RibbonSobre"/>
+        </group>
+
+      </tab>
+    </tabs>
+  </ribbon>
+</customUI>

@@ -1,0 +1,25 @@
+# Ignora tudo e libera so o que e fonte do produto. Assim nenhum build de
+# 237 MB, copia antiga (ByeSolver 1.0, backups) ou dado da LookVision sobe
+# por acidente. Para acrescentar um arquivo, libere-o aqui com "!".
+/*
+!/.gitignore
+!/README.md
+!/LICENSE
+!/byesolver.py
+!/imtsolver_pasta.spec
+!/v2/
+/v2/*
+!/v2/IMTSolver.bas
+!/v2/IMTSolverUI.bas
+!/v2/frmModelo.txt
+!/v2/frmProgresso.txt
+!/v2/customUI14.xml
+!/v2/injetar_faixa.py
+!/v2/IMTSolver.iss
+!/v2/Instalar.ps1
+!/v2/Instalar.bat
+!/v2/Desinstalar.bat
+!/v2/LEIAME.md
+!/v2/checar_icones.ps1
+!/v2/IMTSolver_Exemplos.xlsx
+!/v2/IMTSolver.xlam

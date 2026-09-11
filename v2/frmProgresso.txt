@@ -1,0 +1,499 @@
+'==============================================================
+' frmProgresso - janela de acompanhamento
+'
+' COMO INSTALAR: no editor de VBA, Inserir > UserForm. No painel
+' Propriedades mude (Name) para frmProgresso. Abra o codigo do
+' formulario (F7) e cole este arquivo inteiro por cima.
+'
+' A janela e modeless: o Excel continua respondendo enquanto o
+' solver roda. Os controles sao criados em tempo de execucao, por
+' isso o formulario pode ficar vazio no editor.
+'==============================================================
+Option Explicit
+
+Private WithEvents mBtnCancelar As MSForms.CommandButton
+Private WithEvents mBtnFechar As MSForms.CommandButton
+Private WithEvents mBtnOK As MSForms.CommandButton
+Private WithEvents mChkLog As MSForms.CheckBox
+
+Private mMontado As Boolean
+Private mCancelado As Boolean
+Private mRodando As Boolean         ' o motor esta no ar
+Private mTerminou As Boolean
+Private mArqLog As String
+Private mTotal As Double     ' segundos desde o clique em Resolver
+Private mHistorico As String ' a tabela de melhoras que mostramos
+Private mUltInc As String    ' ultima melhor solucao ja registrada
+Private mUltLim As String    ' ultimo limite ja registrado
+Private mVerLog As Boolean   ' mostrar o log cru do solver
+Private mSolver As String
+
+Private Const LARG As Single = 640
+
+'--------------------------------------------------------------
+' interface usada pelo nucleo
+'--------------------------------------------------------------
+Public Sub Abrir(ByVal solver As String, Optional ByVal titulo As String = "")
+    ' titulo vazio = estamos resolvendo. O Verificar reusa esta mesma
+    ' janela para a leitura, e la nao se esta resolvendo coisa alguma.
+    Dim cab As String, cap As String
+    If Len(titulo) > 0 Then
+        cab = titulo: cap = IMT_NOME & " - " & LCase$(titulo)
+    Else
+        cab = "Resolvendo com " & solver: cap = IMT_NOME & " - resolvendo"
+    End If
+    Montar
+    mSolver = solver
+    mCancelado = False: mRodando = False: mTerminou = False: mTotal = 0
+    mHistorico = "": mUltInc = "": mUltLim = ""
+    ModoLeitura
+    Me.Caption = cap
+    Me.Controls("lblTitulo").Caption = cab
+    Me.Controls("lblFase").Caption = "Preparando..."
+    Me.Controls("lblTempo").Caption = ""
+    Me.Controls("txtLog").Text = ""
+    Valor "Inc", "-": Valor "Lim", "-": Valor "Gap", "-": Valor "Nos", "-"
+    mBtnCancelar.Enabled = True
+    Me.Show vbModeless
+    DoEvents
+End Sub
+
+Public Sub Fase(ByVal texto As String)
+    Me.Controls("lblFase").Caption = texto
+    DoEvents
+End Sub
+
+Public Sub Lendo(ByVal feitas As Long, ByVal total As Long, _
+                 ByVal segundos As Double)
+    ' Barra de progresso da leitura do modelo. E a etapa mais longa em
+    ' modelos grandes, e sem isto a janela parecia travada.
+    Dim f As Double, falta As Double
+    If total <= 0 Then Exit Sub
+    f = feitas / total
+    Me.Controls("lblFase").Caption = "Lendo os coeficientes direto das formulas"
+    Me.Controls("barraCheia").Width = (LARG - 24) * f
+    Me.Controls("lblBarra").Caption = _
+        Format$(feitas, "#,##0") & " de " & Format$(total, "#,##0") & _
+        " variaveis   (" & Format$(f, "0%") & ")"
+    If feitas > 0 And segundos > 1 Then
+        falta = segundos * (total - feitas) / feitas
+        Me.Controls("lblTempo").Caption = "Tempo decorrido: " & Relogio(segundos) & _
+            "     faltam cerca de " & Relogio(falta)
+    Else
+        Me.Controls("lblTempo").Caption = "Tempo decorrido: " & Relogio(segundos)
+    End If
+    DoEvents
+End Sub
+
+Public Property Get Cancelado() As Boolean
+    Cancelado = mCancelado
+End Property
+
+Public Sub Iniciou(ByVal solver As String, ByVal arqLog As String)
+    mSolver = solver
+    mArqLog = arqLog
+    mRodando = True
+    ModoAndamento
+    Me.Controls("lblFase").Caption = "Iniciando " & solver & "..."
+End Sub
+
+Public Sub Atualizar(d As Object, ByVal segundos As Double)
+    Dim fase As String, msg As String, texto As String
+    fase = d("fase"): msg = d("mensagem")
+    Select Case fase
+        Case "iniciando": texto = "Iniciando o motor"
+        Case "lendo_modelo": texto = "Motor lendo o modelo"
+        Case "resolvendo"
+            texto = "Resolvendo com " & mSolver
+            ' o CBC guarda a saida em blocos: os numeros aparecem aos
+            ' saltos, e nao ha o que fazer do nosso lado
+            If InStr(1, mSolver, "CBC", vbTextCompare) > 0 Then _
+                texto = texto & "   (o CBC so reporta de tempos em tempos)"
+        Case "neos_enviando": texto = "Enviando o modelo ao NEOS"
+        Case "neos_fila": texto = "Na fila do NEOS (depende do movimento la)"
+        Case "neos_executando": texto = "Rodando no NEOS"
+        Case "sensibilidade": texto = "Calculando a analise de sensibilidade"
+        Case "gravando": texto = "Gravando a solucao"
+        Case "concluido": texto = "Concluido"
+        Case "cancelado": texto = "Cancelado"
+        Case "erro": texto = "Erro"
+        Case Else: texto = fase
+    End Select
+    If Len(msg) > 0 And fase <> "concluido" Then texto = texto & "  -  " & msg
+    Me.Controls("lblFase").Caption = texto
+    mTotal = segundos
+    Me.Controls("lblTempo").Caption = "Tempo decorrido: " & Relogio(segundos)
+    Valor "Inc", Numero(d("incumbente"))
+    Valor "Lim", Numero(d("limite"))
+    Valor "Gap", Percentual(d("gap"))
+    ' iif-ok: os dois ramos sao seguros (revisado)
+    Valor "Nos", IIf(Len(d("nos")) > 0, d("nos"), "-")
+    Anotar d, segundos
+    ' O NEOS nao reporta melhor solucao nem limite - a tabela ficaria em
+    ' branco. Nele o que interessa e a saida do proprio solver.
+    If Left$(fase, 5) = "neos_" And Not mVerLog Then
+        mVerLog = True
+        mChkLog.Value = True
+    End If
+    Mostrar
+    DoEvents
+End Sub
+
+Public Sub Terminou(sol As Object, ByVal temSolucao As Boolean, ByVal temSens As Boolean)
+    Dim st As String, texto As String
+    mRodando = False: mTerminou = True
+    st = sol("status")
+    Me.Caption = IMT_NOME & " - resultado"
+    Select Case st
+        Case "Optimal"
+            texto = "Solucao otima encontrada."
+        Case "TimeLimit"
+            ' Dizer so "limite de tempo" fazia a pessoa levar o numero como
+            ' se fosse o otimo. Aqui mostramos entre que valores ele esta
+            ' e o que fazer para fechar.
+            texto = "Parou no limite de tempo"
+            If Len(sol("gap")) > 0 Then
+                texto = texto & ", com gap de " & Percentual(sol("gap"))
+            End If
+            texto = texto & "." & vbLf & "Esta NAO e a resposta provada como otima."
+            If Len(sol("limite")) > 0 And Len(sol("objetivo")) > 0 Then
+                texto = texto & vbLf & "O otimo esta entre " & Numero(sol("limite")) & _
+                        " e " & Numero(sol("objetivo")) & ": o solver achou " & _
+                        Numero(sol("objetivo")) & " e provou que nada e melhor " & _
+                        "que " & Numero(sol("limite")) & "."
+            End If
+            texto = texto & vbLf & "Para fechar: aumente o tempo maximo, ou " & _
+                    "aceite um gap (0,01 para de parar com 1% de folga)."
+        Case "Infeasible"
+            texto = "Inviavel: nenhum valor das variaveis atende todas as restricoes ao mesmo tempo."
+        Case "Unbounded"
+            texto = "Ilimitado: o objetivo pode melhorar sem fim. Falta alguma restricao."
+        Case "Cancelled"
+            texto = "Cancelado." & IIf(temSolucao, " O solver devolveu a melhor solucao que tinha.", "")
+        Case Else
+            ' iif-ok: os dois ramos sao seguros (revisado)
+            texto = StatusBonito(st) & IIf(Len(sol("mensagem")) > 0, vbLf & sol("mensagem"), "")
+    End Select
+    If temSolucao And Len(sol("objetivo")) > 0 Then
+        texto = texto & vbLf & vbLf & "Objetivo: " & Numero(sol("objetivo")) & _
+                "     Solver: " & sol("solver") & _
+                "     Solver levou: " & TempoBonito(sol("segundos"))
+    End If
+    ' o relogio da janela conta desde o clique: inclui iniciar o motor,
+    ' escrever o .lp e a analise de sensibilidade
+    If mTotal > 0 Then
+        texto = texto & vbLf & "Total desde o clique: " & TempoBonito(mTotal) & _
+                "  (inclui iniciar o motor)"
+    End If
+    Me.Controls("lblFase").Caption = StatusBonito(st)
+    Me.Controls("lblResultado").Caption = texto
+    ModoResultado temSolucao, temSens
+    Mostrar
+    DoEvents
+End Sub
+
+Public Sub Erro(ByVal msg As String)
+    mRodando = False: mTerminou = True
+    Montar
+    If Not Me.Visible Then Me.Show vbModeless
+    Me.Caption = IMT_NOME & " - erro"
+    Me.Controls("lblFase").Caption = "Erro"
+    Me.Controls("lblResultado").Caption = msg
+    ModoResultado False, False
+    DoEvents
+End Sub
+
+'--------------------------------------------------------------
+' montagem
+'--------------------------------------------------------------
+Private Sub Montar()
+    If mMontado Then Exit Sub
+    mMontado = True
+    Me.Width = LARG + 16
+    Me.Height = 392
+    Me.StartUpPosition = 1
+
+    Rotulo "lblTitulo", 12, 8, LARG - 24, 20, "", True, 12
+    Rotulo "lblFase", 12, 32, LARG - 24, 16, "", False, 9
+    Rotulo "lblTempo", 12, 50, LARG - 24, 14, "", False, 9
+
+    Dim k As Long, nomes As Variant, titulos As Variant
+    nomes = Array("Inc", "Lim", "Gap", "Nos")
+    titulos = Array("Melhor solucao", "Limite (bound)", "Gap", "Nos / iteracoes")
+    For k = 0 To 3
+        Rotulo "lblT" & nomes(k), 12 + k * 120, 72, 116, 12, titulos(k), False, 8
+        Me.Controls("lblT" & nomes(k)).ForeColor = RGB(110, 110, 110)
+        Rotulo "lblV" & nomes(k), 12 + k * 120, 85, 116, 16, "-", True, 10
+    Next k
+
+    ' barra de progresso da leitura: um retangulo cinza com outro por cima
+    With Me.Controls.Add("Forms.Label.1", "barraFundo", True)
+        .Left = 12: .Top = 112: .Width = LARG - 24: .Height = 18
+        .BackColor = RGB(226, 226, 226): .Caption = ""
+    End With
+    With Me.Controls.Add("Forms.Label.1", "barraCheia", True)
+        .Left = 12: .Top = 112: .Width = 0: .Height = 18
+        .BackColor = RGB(29, 158, 117): .Caption = ""
+    End With
+    Rotulo "lblBarra", 12, 136, LARG - 24, 14, "", False, 9
+
+    ' o log cru do solver tem linhas de ~110 colunas. Sem quebra e com
+    ' barra horizontal elas ficam inteiras; quebradas viravam sopa.
+    With Me.Controls.Add("Forms.TextBox.1", "txtLog", True)
+        .Left = 12: .Top = 108: .Width = LARG - 24: .Height = 178
+        .MultiLine = True: .WordWrap = False
+        .ScrollBars = fmScrollBarsBoth
+        .Locked = True: .Font.Name = "Consolas": .Font.Size = 8
+        .BackColor = RGB(250, 250, 250)
+    End With
+
+    Set mChkLog = Me.Controls.Add("Forms.CheckBox.1", "chkLog", True)
+    With mChkLog
+        .Left = 12: .Top = 292: .Width = 200: .Height = 16
+        .Caption = "Mostrar o log do solver": .Value = False
+    End With
+
+    Rotulo "lblResultado", 12, 108, LARG - 24, 72, "", False, 10
+    Me.Controls("lblResultado").WordWrap = True
+
+    With Me.Controls.Add("Forms.CheckBox.1", "chkResposta", True)
+        .Left = 12: .Top = 186: .Width = 230: .Height = 16
+        .Caption = "Relatorio de resposta": .Value = True
+    End With
+    With Me.Controls.Add("Forms.CheckBox.1", "chkSens", True)
+        .Left = 12: .Top = 204: .Width = 230: .Height = 16
+        .Caption = "Relatorio de sensibilidade": .Value = True
+    End With
+    With Me.Controls.Add("Forms.OptionButton.1", "optManter", True)
+        .Left = 260: .Top = 186: .Width = 230: .Height = 16
+        .Caption = "Manter a solucao na planilha": .Value = True
+    End With
+    With Me.Controls.Add("Forms.OptionButton.1", "optRestaurar", True)
+        .Left = 260: .Top = 204: .Width = 230: .Height = 16
+        .Caption = "Restaurar os valores originais"
+    End With
+
+    Set mBtnCancelar = Me.Controls.Add("Forms.CommandButton.1", "btnCancelar", True)
+    With mBtnCancelar
+        .Left = LARG - 196: .Top = 316: .Width = 90: .Height = 26: .Caption = "Cancelar"
+    End With
+    Set mBtnFechar = Me.Controls.Add("Forms.CommandButton.1", "btnFechar", True)
+    With mBtnFechar
+        .Left = LARG - 98: .Top = 316: .Width = 90: .Height = 26: .Caption = "Fechar"
+    End With
+    Set mBtnOK = Me.Controls.Add("Forms.CommandButton.1", "btnOK", True)
+    With mBtnOK
+        .Left = LARG - 98: .Top = 316: .Width = 90: .Height = 26: .Caption = "OK": .Default = True
+    End With
+End Sub
+
+Private Sub Rotulo(ByVal nome As String, ByVal x As Single, ByVal y As Single, ByVal w As Single, ByVal h As Single, _
+                   ByVal texto As String, ByVal negrito As Boolean, ByVal tam As Single)
+    With Me.Controls.Add("Forms.Label.1", nome, True)
+        .Left = x: .Top = y: .Width = w: .Height = h
+        .Caption = texto: .Font.Bold = negrito: .Font.Size = tam
+    End With
+End Sub
+
+Private Sub ModoLeitura()
+    ' Durante a leitura os quadros do solver estao todos vazios e o log
+    ' em branco - a janela parecia travada. Aqui so a barra aparece.
+    Dim k As Long, nomes As Variant
+    nomes = Array("Inc", "Lim", "Gap", "Nos")
+    For k = 0 To 3
+        Me.Controls("lblT" & nomes(k)).Visible = False
+        Me.Controls("lblV" & nomes(k)).Visible = False
+    Next k
+    Me.Controls("txtLog").Visible = False
+    mChkLog.Visible = False
+    Me.Controls("lblResultado").Visible = False
+    Me.Controls("chkResposta").Visible = False
+    Me.Controls("chkSens").Visible = False
+    Me.Controls("optManter").Visible = False
+    Me.Controls("optRestaurar").Visible = False
+    Me.Controls("barraFundo").Visible = True
+    Me.Controls("barraCheia").Visible = True
+    Me.Controls("barraCheia").Width = 0
+    Me.Controls("lblBarra").Visible = True
+    Me.Controls("lblBarra").Caption = ""
+    mBtnOK.Visible = False
+    mBtnCancelar.Visible = True
+    mBtnFechar.Visible = True
+End Sub
+
+Private Sub Anotar(d As Object, ByVal segundos As Double)
+    ' Uma linha por melhora, em vez do log cru. E a historia que interessa:
+    ' a melhor solucao caindo e o limite subindo ate se encontrarem.
+    Dim inc As String, lim As String
+    inc = CStr(d("incumbente")): lim = CStr(d("limite"))
+    If inc = mUltInc And lim = mUltLim Then Exit Sub
+    mUltInc = inc: mUltLim = lim
+    If Len(mHistorico) = 0 Then
+        mHistorico = Coluna("tempo", 9) & Coluna("melhor solucao", 18) & _
+                     Coluna("limite", 16) & "gap"
+    End If
+    mHistorico = mHistorico & vbCrLf & _
+        Coluna(Relogio(segundos), 9) & Coluna(Numero(inc), 18) & _
+        Coluna(Numero(lim), 16) & Percentual(d("gap"))
+End Sub
+
+Private Function Coluna(ByVal s As String, ByVal n As Long) As String
+    If Len(s) >= n Then
+        Coluna = Left$(s, n - 1) & " "
+    Else
+        Coluna = s & Space$(n - Len(s))
+    End If
+End Function
+
+Private Sub Mostrar()
+    Dim texto As String
+    If mVerLog Then
+        If Len(mArqLog) > 0 Then texto = Rabo(mArqLog, 8000)
+    Else
+        texto = mHistorico
+        If Len(texto) = 0 Then texto = "Esperando o solver dar o primeiro sinal..."
+    End If
+    MostrarLog texto
+End Sub
+
+Private Sub mChkLog_Click()
+    mVerLog = mChkLog.Value
+    Mostrar
+End Sub
+
+Private Sub ModoAndamento()
+    Dim k As Long, nomes As Variant
+    nomes = Array("Inc", "Lim", "Gap", "Nos")
+    For k = 0 To 3
+        Me.Controls("lblT" & nomes(k)).Visible = True
+        Me.Controls("lblV" & nomes(k)).Visible = True
+    Next k
+    Me.Controls("barraFundo").Visible = False
+    Me.Controls("barraCheia").Visible = False
+    Me.Controls("lblBarra").Visible = False
+    Me.Controls("lblResultado").Visible = False
+    Me.Controls("chkResposta").Visible = False
+    Me.Controls("chkSens").Visible = False
+    Me.Controls("optManter").Visible = False
+    Me.Controls("optRestaurar").Visible = False
+    Me.Controls("txtLog").Visible = True
+    mChkLog.Visible = True
+    mBtnOK.Visible = False
+    mBtnCancelar.Visible = True
+    mBtnFechar.Visible = True
+    With Me.Controls("txtLog")
+        .Top = 108: .Height = 178
+    End With
+End Sub
+
+Private Sub ModoResultado(ByVal temSolucao As Boolean, ByVal temSens As Boolean)
+    Me.Controls("barraFundo").Visible = False
+    Me.Controls("barraCheia").Visible = False
+    Me.Controls("lblBarra").Visible = False
+    Me.Controls("txtLog").Visible = True
+    mChkLog.Visible = True
+    Me.Controls("lblResultado").Visible = True
+    Me.Controls("chkResposta").Visible = temSolucao
+    Me.Controls("chkSens").Visible = temSolucao
+    Me.Controls("chkSens").Enabled = temSens
+    If Not temSens Then Me.Controls("chkSens").Value = False
+    Me.Controls("optManter").Visible = temSolucao
+    Me.Controls("optRestaurar").Visible = temSolucao
+    Me.Controls("optManter").Value = True
+    mBtnCancelar.Visible = False
+    mBtnFechar.Visible = Not temSolucao
+    mBtnOK.Visible = temSolucao
+    With Me.Controls("txtLog")
+        .Top = 228: .Height = 58
+    End With
+End Sub
+
+Private Sub Valor(ByVal nome As String, ByVal texto As String)
+    Me.Controls("lblV" & nome).Caption = texto
+End Sub
+
+Private Sub MostrarLog(ByVal texto As String)
+    With Me.Controls("txtLog")
+        If .Text <> texto Then
+            .Text = texto
+            .SelStart = Len(texto)
+        End If
+    End With
+End Sub
+
+'--------------------------------------------------------------
+' formatos
+'--------------------------------------------------------------
+Private Function Numero(s As Variant) As String
+    Dim v As Double
+    If IsEmpty(s) Or Len(CStr(s)) = 0 Then
+        Numero = "-"
+        Exit Function
+    End If
+    v = Val(s)
+    If Abs(v) >= 1E+29 Then
+        Numero = "infinito"
+    ElseIf v = Int(v) And Abs(v) < 1E+15 Then
+        ' inteiro: sem casas decimais. O formato "#,##0.####" deixa o
+        ' separador decimal sobrando em idiomas como o portugues.
+        Numero = Format$(v, "#,##0")
+    Else
+        Numero = Format$(v, "#,##0.####")
+    End If
+End Function
+
+Private Function Percentual(s As Variant) As String
+    If IsEmpty(s) Or Len(CStr(s)) = 0 Then
+        Percentual = "-"
+    ElseIf Abs(Val(s)) >= 1E+29 Then
+        Percentual = "infinito"
+    Else
+        Percentual = Format$(Val(s), "0.00%")
+    End If
+End Function
+
+Private Function Relogio(ByVal seg As Double) As String
+    Dim s As Long
+    s = CLng(seg)
+    If s < 0 Then s = 0
+    Relogio = Format$(s \ 3600, "00") & ":" & Format$((s Mod 3600) \ 60, "00") & ":" & Format$(s Mod 60, "00")
+End Function
+
+'--------------------------------------------------------------
+' eventos
+'--------------------------------------------------------------
+Private Sub mBtnCancelar_Click()
+    mCancelado = True
+    If mRodando Then
+        IMTCancelar
+        mBtnCancelar.Enabled = False
+    Else
+        Me.Controls("lblFase").Caption = "Cancelando..."
+    End If
+End Sub
+
+Private Sub mBtnFechar_Click()
+    If mRodando Then
+        If MsgBox("O solver ainda esta rodando. Cancelar a otimizacao?", vbQuestion + vbYesNo, IMT_NOME) = vbYes Then
+            mBtnCancelar_Click
+        End If
+    Else
+        Me.Hide
+    End If
+End Sub
+
+Private Sub mBtnOK_Click()
+    Dim manter As Boolean, rr As Boolean, rs As Boolean
+    manter = Me.Controls("optManter").Value
+    rr = Me.Controls("chkResposta").Value
+    rs = Me.Controls("chkSens").Value And Me.Controls("chkSens").Enabled
+    Me.Hide
+    IMTAplicar manter, rr, rs
+End Sub
+
+Private Sub UserForm_QueryClose(Cancel As Integer, CloseMode As Integer)
+    If CloseMode = vbFormControlMenu Then
+        Cancel = True
+        mBtnFechar_Click
+    End If
+End Sub
