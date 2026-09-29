@@ -319,7 +319,15 @@ Private Function Salvar() As Boolean
     End If
     If m.obj Is Nothing And mN = 0 Then Avisa "Defina pelo menos um objetivo ou uma restricao.": Exit Function
 
+    On Error GoTo Falhou
     GravarModelo m
+    On Error GoTo 0
+    ' conferir: o que foi gravado tem que voltar na leitura
+    If Not TemModelo(mWs) Then
+        Avisa "O modelo nao ficou gravado na aba '" & mWs.Name & "'. " & _
+              "A pasta esta protegida ou e somente leitura?"
+        Exit Function
+    End If
 
     ' opcoes do usuario
     If Me.Controls("cboSolver").ListIndex >= 0 Then GravarOpcao "solver", mSolverNomes(Me.Controls("cboSolver").ListIndex + 1)
@@ -328,6 +336,9 @@ Private Function Salvar() As Boolean
     GravarOpcao "sens", IIf(Me.Controls("chkSens").Value, "1", "0")
     GravarOpcao "email", Trim$(Me.Controls("txtEmail").Text)
     Salvar = True
+    Exit Function
+Falhou:
+    Avisa "Nao consegui gravar o modelo (erro " & Err.Number & "): " & Err.Description
 End Function
 
 '--------------------------------------------------------------
@@ -474,7 +485,10 @@ End Function
 Private Function Faixa(ByVal txt As String) As Range
     On Error Resume Next
     If InStr(txt, "!") > 0 Then
-        Set Faixa = Application.Range(txt)
+        ' Application.Range olha a pasta ATIVA; com duas pastas abertas
+        ' isso pegava a aba de outro arquivo. Evaluate fica na pasta do modelo.
+        Set Faixa = mWs.Evaluate(txt)
+        If TypeName(Faixa) <> "Range" Then Set Faixa = Nothing
     Else
         Set Faixa = mWs.Range(txt)
     End If

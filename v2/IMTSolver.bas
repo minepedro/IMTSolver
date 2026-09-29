@@ -142,8 +142,19 @@ Private Function RefDe(ws As Worksheet, ByVal nome As String) As String
 End Function
 
 Private Function FaixaDe(ws As Worksheet, ByVal nome As String) As Range
+    Dim ref As String
     On Error Resume Next
     Set FaixaDe = ws.Names(nome).RefersToRange
+    If FaixaDe Is Nothing Then
+        ' RefersToRange falha com prefixo [Pasta] antigo ou multiplas areas
+        ref = ws.Names(nome).RefersTo
+        If Len(ref) > 1 Then
+            If InStr(ref, "!") > 0 Then Set FaixaDe = ws.Evaluate(Mid$(ref, 2))
+        End If
+        If Not FaixaDe Is Nothing Then
+            If TypeName(FaixaDe) <> "Range" Then Set FaixaDe = Nothing
+        End If
+    End If
 End Function
 
 Private Function NumeroDe(ws As Worksheet, ByVal nome As String, ByVal padrao As Double) As Double
@@ -168,9 +179,26 @@ Private Sub Apagar(ws As Worksheet, ByVal nome As String)
     ws.Names(nome).Delete
 End Sub
 
+' Aba!$A$1 (uma faixa por area), sem o [Pasta.xlsx] na frente: o nome
+' mora na propria pasta, e o prefixo quebra ao salvar com outro nome ou
+' quando ha outra pasta aberta.
 Private Function RefFaixa(r As Range) As String
-    RefFaixa = "=" & r.Address(True, True, xlA1, True)
+    Dim a As Range, t As String
+    For Each a In r.Areas
+        If Len(t) > 0 Then t = t & ","
+        t = t & "'" & Replace(a.Worksheet.Name, "'", "''") & "'!" & a.Address(True, True)
+    Next a
+    RefFaixa = "=" & t
 End Function
+
+' Ativa a pasta antes da aba: Worksheet.Activate falha (1004) se a
+' pasta dela nao for a ativa, e a pessoa troca de pasta durante o calculo.
+Private Sub Ativa(ws As Worksheet)
+    On Error Resume Next
+    ws.Parent.Activate
+    ws.Activate
+    ws.Range("A1").Select
+End Sub
 
 Public Function TemModelo(ws As Worksheet) As Boolean
     TemModelo = Not (FaixaDe(ws, "solver_adj") Is Nothing)
@@ -1113,7 +1141,7 @@ Public Sub IMTAplicar(ByVal manter As Boolean, ByVal relResposta As Boolean, ByV
     RestaurarCalculo
     If relResposta And gTemSolucao Then RelatorioResposta
     If relSens And gSensVar.Count > 0 Then RelatorioSensibilidade
-    gM.ws.Activate
+    Ativa gM.ws
     Exit Sub
 Falhou:
     RestaurarCalculo
@@ -1314,8 +1342,7 @@ Private Sub RelatorioResposta()
     If gNR > 0 Then
         ws.Range(ws.Cells(L + 2, 1), ws.Cells(L + 1 + gNR, 6)).Value2 = dados
     End If
-    ws.Activate
-    ws.Range("A1").Select
+    Ativa ws
 End Sub
 
 Private Function TextoLadoDireito(ByVal i As Long, ByVal k As Long) As String
@@ -1421,8 +1448,7 @@ Private Sub RelatorioSensibilidade()
     ws.Range("A" & (L + 3 + k)).Value = "Preco sombra: quanto o objetivo muda por unidade a mais no lado direito. " & _
         "Aumento/reducao permitidos: ate onde o lado direito pode ir sem que o preco sombra mude."
     ws.Range("A" & (L + 3 + k)).Font.Italic = True
-    ws.Activate
-    ws.Range("A1").Select
+    Ativa ws
 End Sub
 
 Private Function LadoDireito(ByVal j As Long) As Double
@@ -1860,8 +1886,7 @@ Private Sub MostrarAchados(m As Modelo, ByVal leu As Boolean, ByVal resumo As St
     ws.Columns("D").ColumnWidth = 62
     ws.Range("C:D").WrapText = True
     ws.Rows("8:" & (7 + gNAch)).VerticalAlignment = xlTop
-    ws.Activate
-    ws.Range("A1").Select
+    Ativa ws
 
     ' marcar e reversivel (o botao Esconder limpa), entao nao perguntamos
     If gAchPintar.Count > 0 Then PintarAchados m.ws
