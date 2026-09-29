@@ -5,9 +5,11 @@
 ' Propriedades mude (Name) para frmModelo. Abra o codigo do
 ' formulario (F7) e cole este arquivo inteiro por cima.
 '
-' Nao usa RefEdit nem nenhum controle ActiveX externo: o seletor
-' de faixa e o Application.InputBox nativo do Excel, que funciona
-' em qualquer versao. Por isso a janela e modeless.
+' Nao usa RefEdit nem nenhum controle ActiveX externo. Faixas: a
+' pessoa clica numa caixa (objetivo, variaveis, lados da restricao) e
+' seleciona as celulas direto na planilha; o evento SheetSelectionChange
+' do Excel preenche a caixa ativa. Os botoes "..." (Application.InputBox)
+' continuam como alternativa. Por isso a janela e modeless.
 '
 ' O que voce define aqui vai para os nomes solver_* da aba, o mesmo
 ' lugar onde o Solver do Excel guarda o modelo dele.
@@ -31,6 +33,15 @@ Private WithEvents mBtnSalvar As MSForms.CommandButton
 Private WithEvents mBtnFechar As MSForms.CommandButton
 Private WithEvents mLst As MSForms.ListBox
 Private WithEvents mCboRel As MSForms.ComboBox
+
+' clicar na planilha preenche a caixa "ativa" (a ultima em que se clicou)
+Private WithEvents mApp As Application
+Private WithEvents mTxtObj As MSForms.TextBox
+Private WithEvents mTxtVars As MSForms.TextBox
+Private WithEvents mTxtLhs As MSForms.TextBox
+Private WithEvents mTxtRhs As MSForms.TextBox
+Private mAlvo As MSForms.TextBox
+Private Const COR_ALVO As Long = &HC8FAFF     ' amarelo claro (BGR)
 
 Private mWs As Worksheet
 Private mMontado As Boolean
@@ -57,6 +68,8 @@ Private Const LARG As Single = 560
 Public Sub Abrir(ws As Worksheet)
     Montar
     Set mWs = ws
+    Set mApp = Application
+    Desmarcar
     Me.Caption = IMT_NOME & " - modelo da aba '" & ws.Name & "'"
     Me.Controls("lblAba").Caption = "Este modelo fica salvo na aba '" & ws.Name & _
                                     "'. Cada aba da pasta guarda o seu."
@@ -79,6 +92,7 @@ Private Sub Montar()
     ' objetivo
     Rotulo "lblObj", 12, 8, 200, 12, "Celula do objetivo (com formula):"
     Caixa "txtObj", 12, 22, 250, 20
+    Set mTxtObj = Me.Controls("txtObj")
     Set mBtnObj = Botao("btnObj", 266, 22, 26, 20, "...")
     Opcao_ "optMax", 310, 24, 55, "Max"
     Opcao_ "optMin", 365, 24, 55, "Min"
@@ -89,9 +103,11 @@ Private Sub Montar()
     ' variaveis
     Rotulo "lblVars", 12, 48, 300, 12, "Celulas variaveis (pode ter varias faixas, separadas por virgula):"
     Caixa "txtVars", 12, 62, 250, 20
+    Set mTxtVars = Me.Controls("txtVars")
     Set mBtnVars = Botao("btnVars", 266, 62, 26, 20, "...")
     Set mBtnSugerir = Botao("btnSugerir", 310, 62, 130, 20, "Sugerir pelo objetivo")
-    Rotulo "lblDica", 12, 84, LARG - 24, 12, "Dica: celulas de valor (sem formula) das quais o objetivo depende."
+    mBtnSugerir.ControlTipText = "Celulas de valor (sem formula) das quais o objetivo depende"
+    Rotulo "lblDica", 12, 84, LARG - 24, 12, "Dica: clique numa caixa e selecione as celulas direto na planilha (Ctrl = varias faixas)."
     Me.Controls("lblDica").ForeColor = RGB(110, 110, 110)
 
     ' restricoes
@@ -109,6 +125,7 @@ Private Sub Montar()
     ' painel de edicao de uma restricao
     Rotulo "lblEd", 12, 262, 400, 12, "Restricao:  lado esquerdo     sinal     lado direito (faixa ou numero)"
     Caixa "txtLhs", 12, 276, 150, 20
+    Set mTxtLhs = Me.Controls("txtLhs")
     Set mBtnLhs = Botao("btnLhs", 166, 276, 26, 20, "...")
     Set mCboRel = Me.Controls.Add("Forms.ComboBox.1", "cboRel", True)
     With mCboRel
@@ -118,6 +135,7 @@ Private Sub Montar()
         .ListIndex = 0
     End With
     Caixa "txtRhs", 260, 276, 150, 20
+    Set mTxtRhs = Me.Controls("txtRhs")
     Set mBtnRhs = Botao("btnRhs", 414, 276, 26, 20, "...")
     Set mBtnAplicar = Botao("btnAplicar", 448, 276, 50, 20, "OK")
     Set mBtnCancRestr = Botao("btnCancRestr", 502, 276, 46, 20, "Cancelar")
@@ -372,6 +390,7 @@ End Function
 
 Private Sub PainelRestricao(ByVal visivel As Boolean)
     Dim n As Variant
+    Desmarcar
     For Each n In Array("lblEd", "txtLhs", "btnLhs", "cboRel", "txtRhs", "btnRhs", "btnAplicar", "btnCancRestr")
         Me.Controls(n).Visible = visivel
     Next n
@@ -467,6 +486,7 @@ End Sub
 Private Function EscolherFaixa(ByVal prompt As String, ByVal atual As String) As String
     Dim r As Range
     EscolherFaixa = atual
+    Desmarcar                       ' o InputBox tem o proprio seletor
     On Error Resume Next
     Set r = Application.InputBox(prompt, IMT_NOME, atual, Type:=8)
     On Error GoTo 0
@@ -474,20 +494,66 @@ Private Function EscolherFaixa(ByVal prompt As String, ByVal atual As String) As
 End Function
 
 Private Function Endereco(r As Range) As String
-    ' A1:B3 quando e da aba do modelo; 'Outra'!A1 quando nao e
-    If r.Worksheet Is mWs Then
-        Endereco = r.Address(False, False)
-    Else
-        Endereco = "'" & r.Worksheet.Name & "'!" & r.Address(False, False)
-    End If
+    ' A1:B3 quando e da aba do modelo; 'Outra'!A1 quando nao e.
+    ' Uma faixa por area, cada uma com a sua aba, para o Evaluate da Faixa.
+    Dim a As Range, t As String
+    For Each a In r.Areas
+        If Len(t) > 0 Then t = t & ","
+        If a.Worksheet Is mWs Then
+            t = t & a.Address(False, False)
+        Else
+            t = t & "'" & a.Worksheet.Name & "'!" & a.Address(False, False)
+        End If
+    Next a
+    Endereco = t
 End Function
+
+'--------------------------------------------------------------
+' clicar na planilha para escolher faixas
+'--------------------------------------------------------------
+Private Sub Marcar(alvo As MSForms.TextBox)
+    Desmarcar
+    Set mAlvo = alvo
+    alvo.BackColor = COR_ALVO
+End Sub
+
+Private Sub Desmarcar()
+    On Error Resume Next
+    If Not mAlvo Is Nothing Then mAlvo.BackColor = &H80000005   ' cor de janela
+    Set mAlvo = Nothing
+End Sub
+
+Private Sub mTxtObj_Enter(): Marcar mTxtObj: End Sub
+Private Sub mTxtObj_MouseDown(ByVal Button As Integer, ByVal Shift As Integer, ByVal X As Single, ByVal Y As Single): Marcar mTxtObj: End Sub
+Private Sub mTxtVars_Enter(): Marcar mTxtVars: End Sub
+Private Sub mTxtVars_MouseDown(ByVal Button As Integer, ByVal Shift As Integer, ByVal X As Single, ByVal Y As Single): Marcar mTxtVars: End Sub
+Private Sub mTxtLhs_Enter(): Marcar mTxtLhs: End Sub
+Private Sub mTxtLhs_MouseDown(ByVal Button As Integer, ByVal Shift As Integer, ByVal X As Single, ByVal Y As Single): Marcar mTxtLhs: End Sub
+Private Sub mTxtRhs_Enter(): Marcar mTxtRhs: End Sub
+Private Sub mTxtRhs_MouseDown(ByVal Button As Integer, ByVal Shift As Integer, ByVal X As Single, ByVal Y As Single): Marcar mTxtRhs: End Sub
+
+Private Sub mApp_SheetSelectionChange(ByVal Sh As Object, ByVal Target As Range)
+    ' So conta a selecao feita na pasta do modelo (com duas pastas abertas
+    ' um clique na outra nao pode preencher esta janela).
+    On Error Resume Next
+    If mAlvo Is Nothing Then Exit Sub
+    If mWs Is Nothing Then Exit Sub
+    If Not Me.Visible Then Exit Sub
+    If Not mAlvo.Visible Or Not mAlvo.Enabled Then Exit Sub
+    If Not Sh.Parent Is mWs.Parent Then Exit Sub
+    If mAlvo Is mTxtObj Then
+        mAlvo.Text = Endereco(Target.Cells(1, 1))     ' objetivo: uma celula so
+    Else
+        mAlvo.Text = Endereco(Target)
+    End If
+End Sub
 
 Private Function Faixa(ByVal txt As String) As Range
     On Error Resume Next
     If InStr(txt, "!") > 0 Then
         ' Application.Range olha a pasta ATIVA; com duas pastas abertas
         ' isso pegava a aba de outro arquivo. Evaluate fica na pasta do modelo.
-        Set Faixa = mWs.Evaluate(txt)
+        Set Faixa = mWs.Evaluate("(" & txt & ")")
         If TypeName(Faixa) <> "Range" Then Set Faixa = Nothing
     Else
         Set Faixa = mWs.Range(txt)
@@ -560,20 +626,24 @@ End Sub
 ' botoes principais
 '--------------------------------------------------------------
 Private Sub mBtnSalvar_Click()
+    Desmarcar
     If Salvar() Then MsgBox "Modelo salvo na aba '" & mWs.Name & "'.", vbInformation, IMT_NOME
 End Sub
 
 Private Sub mBtnResolver_Click()
+    Desmarcar
     If Not Salvar() Then Exit Sub
     Me.Hide
     IMTResolver mWs
 End Sub
 
 Private Sub mBtnFechar_Click()
+    Desmarcar
     Me.Hide
 End Sub
 
 Private Sub UserForm_QueryClose(Cancel As Integer, CloseMode As Integer)
+    Desmarcar
     If CloseMode = vbFormControlMenu Then
         Cancel = True
         Me.Hide
